@@ -1,0 +1,1 @@
+This folder stores NinjaOne wrapper scripts that download + run tools from GitHub.
