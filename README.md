@@ -17,6 +17,12 @@ Run these directly on any endpoint (elevated PowerShell). They download the late
 # Optional cleanup:
 # Remove-Item $d -Force -ErrorAction SilentlyContinue
 
+**### B) Local users tool — Manage‑LocalUsers**
+
+[Net.ServicePointManager]::SecurityProtocol=[Net.SecurityProtocolType]::Tls12;$u="https://raw.githubusercontent.com/Abassam08/windows-management-scripts/main/scripts/Manage-LocalUsers.ps1";$d="$env:TEMP\Manage-LocalUsers.ps1";Invoke-WebRequest -UseBasicParsing -Uri $u -OutFile $d;powershell.exe -ExecutionPolicy Bypass -File $d
+# Optional cleanup:
+# Remove-Item $d -Force -ErrorAction SilentlyContinue
+
 **## How to use with NinjaOne (recommended)**
 
 Use the small “download & run” wrapper so endpoints always run the latest version from this repo:
