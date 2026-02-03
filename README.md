@@ -15,3 +15,29 @@ $scriptUrl = "https://raw.githubusercontent.com/Abassam08/windows-management-scr
 $dest = "$env:TEMP\Remove-UserProfileInteractive.ps1"
 Invoke-WebRequest -UseBasicParsing -Uri $scriptUrl -OutFile $dest
 powershell.exe -ExecutionPolicy Bypass -File $dest
+Save the above as a NinjaOne script and run on any device. Update the tool here in GitHub; no changes needed in NinjaOne.
+Requirements
+
+Run PowerShell as Administrator.
+Windows 10/11 or Server 2016+ (uses CIM / LocalAccounts cmdlets).
+
+Safety notes
+
+The profile tool blocks deletion of LOADED profiles to prevent breaking live sessions.
+Manage-LocalUsers protects common built-in accounts and offers a Disable option.
+
+License
+MIT (see LICENSE).
+
+---
+
+## 🧾 LICENSE (MIT)  
+MIT keeps things simple and permissive:
+
+```text
+MIT License
+
+Copyright (c) 2026 Ahmed
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+...
