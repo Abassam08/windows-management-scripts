@@ -18,6 +18,7 @@ A) Profiles tool — Remove‑UserProfileInteractive
 
 B) Local users tool — Manage‑LocalUsers
 
+```powershell
 [Net.ServicePointManager]::SecurityProtocol=[Net.SecurityProtocolType]::Tls12;$u="https://raw.githubusercontent.com/Abassam08/windows-management-scripts/main/scripts/Manage-LocalUsers.ps1";$d="$env:TEMP\Manage-LocalUsers.ps1";Invoke-WebRequest -UseBasicParsing -Uri $u -OutFile $d;powershell.exe -ExecutionPolicy Bypass -File $d
 # Optional cleanup:
 # Remove-Item $d -Force -ErrorAction SilentlyContinue
