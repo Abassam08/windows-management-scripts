@@ -36,15 +36,15 @@ powershell.exe -ExecutionPolicy Bypass -File $dest
 Save the above as a NinjaOne script and run on any device. Update the tool here in GitHub; no changes needed in NinjaOne.
 Requirements
 
-Run PowerShell as Administrator.
-Windows 10/11 or Server 2016+ (uses CIM / LocalAccounts cmdlets).
+**Run PowerShell as Administrator.
+Windows 10/11 or Server 2016+ (uses CIM / LocalAccounts cmdlets).**
 
-Safety notes
+**Safety notes**
 
 The profile tool blocks deletion of LOADED profiles to prevent breaking live sessions.
 Manage-LocalUsers protects common built-in accounts and offers a Disable option.
 
-License
+**License**
 MIT (see LICENSE).
 
 ---
