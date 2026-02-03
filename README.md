@@ -11,11 +11,13 @@ Run these directly on any endpoint (elevated PowerShell). They download the late
 Requires outbound access to GitHub (raw content). If blocked, use the offline “here‑string” method shown in the docs.
 
 A) Profiles tool — Remove‑UserProfileInteractive
+
 [Net.ServicePointManager]::SecurityProtocol=[Net.SecurityProtocolType]::Tls12;$u="https://raw.githubusercontent.com/Abassam08/windows-management-scripts/main/scripts/Remove-UserProfileInteractive.ps1";$d="$env:TEMP\Remove-UserProfileInteractive.ps1";Invoke-WebRequest -UseBasicParsing -Uri $u -OutFile $d;powershell.exe -ExecutionPolicy Bypass -File $d
 # Optional cleanup:
 # Remove-Item $d -Force -ErrorAction SilentlyContinue
 
 B) Local users tool — Manage‑LocalUsers
+
 [Net.ServicePointManager]::SecurityProtocol=[Net.SecurityProtocolType]::Tls12;$u="https://raw.githubusercontent.com/Abassam08/windows-management-scripts/main/scripts/Manage-LocalUsers.ps1";$d="$env:TEMP\Manage-LocalUsers.ps1";Invoke-WebRequest -UseBasicParsing -Uri $u -OutFile $d;powershell.exe -ExecutionPolicy Bypass -File $d
 # Optional cleanup:
 # Remove-Item $d -Force -ErrorAction SilentlyContinue
