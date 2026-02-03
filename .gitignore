@@ -1,0 +1,17 @@
+# Windows junk
+Thumbs.db
+Desktop.ini
+
+# Editors
+.vscode/
+.idea/
+
+# Logs / artifacts
+*.log
+*.bak
+*.tmp
+
+# PowerShell module/cache files
+*.ps1xml
+*.pssc
+*.psd1
