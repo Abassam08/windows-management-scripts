@@ -61,6 +61,64 @@ function Write-AppEvent {
 
         [int]$EventId = 1001
     )
+
+# v1.2.0 — Event Log integration ---------------------------------------------
+
+# Ensure you add this to your param() in each script:
+# [switch]$WriteEventLog
+
+# Constants for Application Event Log
+$Global:AppEventLogName  = 'Application'
+$Global:AppEventSource   = 'WindowsMgmtScripts'
+
+function Ensure-AppEventSource {
+    [CmdletBinding()]
+    param()
+    try {
+        if (-not [System.Diagnostics.EventLog]::SourceExists($Global:AppEventSource)) {
+            # Creating an event source requires admin. If the script isn't running elevated,
+            # catch and continue (CSV logging remains unaffected).
+            New-EventLog -LogName $Global:AppEventLogName -Source $Global:AppEventSource -ErrorAction Stop
+            # Optional: Write an initial informational record to confirm creation
+            Write-EventLog -LogName $Global:AppEventLogName -Source $Global:AppEventSource -EventId 1000 -EntryType Information -Message 'Event source initialized.'
+        }
+    } catch {
+        # Non-fatal: fall back to CSV-only if this fails (e.g., not admin)
+        Write-Verbose "Ensure-AppEventSource: $_"
+    }
+}
+
+function Write-AppEvent {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [ValidateSet('Information','Warning','Error')]
+        [string]$Level,
+
+        [Parameter(Mandatory)]
+        [string]$Message,
+
+        [int]$EventId = 1001
+    )
+    if (-not $WriteEventLog) { return }
+
+    # Ensure source exists (no-op after first success)
+    Ensure-AppEventSource
+
+    try {
+        $entryType = switch ($Level) {
+            'Information' { 'Information' }
+            'Warning'     { 'Warning' }
+            'Error'       { 'Error' }
+        }
+        Write-EventLog -LogName $Global:AppEventLogName -Source $Global:AppEventSource -EventId $EventId -EntryType $entryType -Message $Message
+    } catch {
+        # Never break main flow due to eventing
+        Write-Verbose "Write-AppEvent failed: $_"
+    }
+}
+# ---------------------------------------------------------------------------
+    
     if (-not $WriteEventLog) { return }
 
     # Ensure source exists (no-op after first success)
@@ -99,6 +157,64 @@ function Initialize-Log {
     }
 }
 
+
+# v1.2.0 — Event Log integration ---------------------------------------------
+
+# Ensure you add this to your param() in each script:
+# [switch]$WriteEventLog
+
+# Constants for Application Event Log
+$Global:AppEventLogName  = 'Application'
+$Global:AppEventSource   = 'WindowsMgmtScripts'
+
+function Ensure-AppEventSource {
+    [CmdletBinding()]
+    param()
+    try {
+        if (-not [System.Diagnostics.EventLog]::SourceExists($Global:AppEventSource)) {
+            # Creating an event source requires admin. If the script isn't running elevated,
+            # catch and continue (CSV logging remains unaffected).
+            New-EventLog -LogName $Global:AppEventLogName -Source $Global:AppEventSource -ErrorAction Stop
+            # Optional: Write an initial informational record to confirm creation
+            Write-EventLog -LogName $Global:AppEventLogName -Source $Global:AppEventSource -EventId 1000 -EntryType Information -Message 'Event source initialized.'
+        }
+    } catch {
+        # Non-fatal: fall back to CSV-only if this fails (e.g., not admin)
+        Write-Verbose "Ensure-AppEventSource: $_"
+    }
+}
+
+function Write-AppEvent {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [ValidateSet('Information','Warning','Error')]
+        [string]$Level,
+
+        [Parameter(Mandatory)]
+        [string]$Message,
+
+        [int]$EventId = 1001
+    )
+    if (-not $WriteEventLog) { return }
+
+    # Ensure source exists (no-op after first success)
+    Ensure-AppEventSource
+
+    try {
+        $entryType = switch ($Level) {
+            'Information' { 'Information' }
+            'Warning'     { 'Warning' }
+            'Error'       { 'Error' }
+        }
+        Write-EventLog -LogName $Global:AppEventLogName -Source $Global:AppEventSource -EventId $EventId -EntryType $entryType -Message $Message
+    } catch {
+        # Never break main flow due to eventing
+        Write-Verbose "Write-AppEvent failed: $_"
+    }
+}
+# ---------------------------------------------------------------------------
+
 function Write-Log {
     param(
         [string]$Action,
@@ -110,6 +226,64 @@ function Write-Log {
         [string]$Result,
         [string]$Message
     )
+
+# v1.2.0 — Event Log integration ---------------------------------------------
+
+# Ensure you add this to your param() in each script:
+# [switch]$WriteEventLog
+
+# Constants for Application Event Log
+$Global:AppEventLogName  = 'Application'
+$Global:AppEventSource   = 'WindowsMgmtScripts'
+
+function Ensure-AppEventSource {
+    [CmdletBinding()]
+    param()
+    try {
+        if (-not [System.Diagnostics.EventLog]::SourceExists($Global:AppEventSource)) {
+            # Creating an event source requires admin. If the script isn't running elevated,
+            # catch and continue (CSV logging remains unaffected).
+            New-EventLog -LogName $Global:AppEventLogName -Source $Global:AppEventSource -ErrorAction Stop
+            # Optional: Write an initial informational record to confirm creation
+            Write-EventLog -LogName $Global:AppEventLogName -Source $Global:AppEventSource -EventId 1000 -EntryType Information -Message 'Event source initialized.'
+        }
+    } catch {
+        # Non-fatal: fall back to CSV-only if this fails (e.g., not admin)
+        Write-Verbose "Ensure-AppEventSource: $_"
+    }
+}
+
+function Write-AppEvent {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [ValidateSet('Information','Warning','Error')]
+        [string]$Level,
+
+        [Parameter(Mandatory)]
+        [string]$Message,
+
+        [int]$EventId = 1001
+    )
+    if (-not $WriteEventLog) { return }
+
+    # Ensure source exists (no-op after first success)
+    Ensure-AppEventSource
+
+    try {
+        $entryType = switch ($Level) {
+            'Information' { 'Information' }
+            'Warning'     { 'Warning' }
+            'Error'       { 'Error' }
+        }
+        Write-EventLog -LogName $Global:AppEventLogName -Source $Global:AppEventSource -EventId $EventId -EntryType $entryType -Message $Message
+    } catch {
+        # Never break main flow due to eventing
+        Write-Verbose "Write-AppEvent failed: $_"
+    }
+}
+# ---------------------------------------------------------------------------
+    
     try {
         $row = [PSCustomObject]@{
             Timestamp   = (Get-Date).ToString("s")
@@ -183,6 +357,64 @@ function Get-FolderSizeMB {
         return [math]::Round($bytes / 1MB, 1)
     } catch { return 0 }
 }
+
+# v1.2.0 — Event Log integration ---------------------------------------------
+
+# Ensure you add this to your param() in each script:
+# [switch]$WriteEventLog
+
+# Constants for Application Event Log
+$Global:AppEventLogName  = 'Application'
+$Global:AppEventSource   = 'WindowsMgmtScripts'
+
+function Ensure-AppEventSource {
+    [CmdletBinding()]
+    param()
+    try {
+        if (-not [System.Diagnostics.EventLog]::SourceExists($Global:AppEventSource)) {
+            # Creating an event source requires admin. If the script isn't running elevated,
+            # catch and continue (CSV logging remains unaffected).
+            New-EventLog -LogName $Global:AppEventLogName -Source $Global:AppEventSource -ErrorAction Stop
+            # Optional: Write an initial informational record to confirm creation
+            Write-EventLog -LogName $Global:AppEventLogName -Source $Global:AppEventSource -EventId 1000 -EntryType Information -Message 'Event source initialized.'
+        }
+    } catch {
+        # Non-fatal: fall back to CSV-only if this fails (e.g., not admin)
+        Write-Verbose "Ensure-AppEventSource: $_"
+    }
+}
+
+function Write-AppEvent {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [ValidateSet('Information','Warning','Error')]
+        [string]$Level,
+
+        [Parameter(Mandatory)]
+        [string]$Message,
+
+        [int]$EventId = 1001
+    )
+    if (-not $WriteEventLog) { return }
+
+    # Ensure source exists (no-op after first success)
+    Ensure-AppEventSource
+
+    try {
+        $entryType = switch ($Level) {
+            'Information' { 'Information' }
+            'Warning'     { 'Warning' }
+            'Error'       { 'Error' }
+        }
+        Write-EventLog -LogName $Global:AppEventLogName -Source $Global:AppEventSource -EventId $EventId -EntryType $entryType -Message $Message
+    } catch {
+        # Never break main flow due to eventing
+        Write-Verbose "Write-AppEvent failed: $_"
+    }
+}
+# ---------------------------------------------------------------------------
+
 
 $display = @()
 foreach ($p in $profiles) {
