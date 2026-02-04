@@ -1,32 +1,38 @@
 <#
-.Title
-    Remove-UserProfileInteractive.ps1
-
 .SYNOPSIS
-    Interactively delete local user profiles (folder + registry), with logging.
+    Interactively deletes a local user profile with CSV + optional Windows Event Log logging.
+
+.VERSION
+    1.2.0
 
 .DESCRIPTION
-    Enumerates non-system, non-special profiles (including LOADED ones so you can see them).
-    Displays a numbered list with username, last use time, and size.
-    Blocks deletion if the selected profile is currently LOADED (in use).
-    Logs all significant actions and outcomes to CSV.
+    - Lists local user profiles under C:\Users (excluding special profiles).
+    - Lets you choose a profile to remove.
+    - Blocks deletion if the profile is loaded.
+    - Logs to CSV in C:\ProgramData\WindowsMgmtScripts\Logs by default.
+    - Optional: also logs to Windows Event Log (Application) when -WriteEventLog is passed.
+    - Requires elevation to delete profiles and to register event source the first time.
+
+.PARAMETER LogRoot
+    Folder where CSV logs are written. Default: C:\ProgramData\WindowsMgmtScripts\Logs
+
+.PARAMETER WriteEventLog
+    When set, writes to Windows Event Log (Application) using Source = WindowsMgmtScripts.
 
 .NOTES
-    Author: Ahmed (Abassam08)
-    Version: 1.1.0
-    Requires: PowerShell 5.1+, Windows 10/11 or Server 2016+
-    Run as: Administrator
-    License: MIT
+    Run in an elevated PowerShell session for full functionality.
+
 #>
 
+[CmdletBinding()]
 param(
-    [string]$LogRoot = "C:\ProgramData\WindowsMgmtScripts\Logs"
+    [string]$LogRoot = "C:\ProgramData\WindowsMgmtScripts\Logs",
+    [switch]$WriteEventLog
 )
 
-# v1.2.0 — Event Log integration ---------------------------------------------
-
-# Ensure you add this to your param() in each script:
-# [switch]$WriteEventLog
+# =========================
+# v1.2.0 — Event Log helper
+# =========================
 
 # Constants for Application Event Log
 $Global:AppEventLogName  = 'Application'
@@ -37,15 +43,12 @@ function Ensure-AppEventSource {
     param()
     try {
         if (-not [System.Diagnostics.EventLog]::SourceExists($Global:AppEventSource)) {
-            # Creating an event source requires admin. If the script isn't running elevated,
-            # catch and continue (CSV logging remains unaffected).
+            # Requires admin to create; if not elevated, this will fail and we fall back to CSV-only.
             New-EventLog -LogName $Global:AppEventLogName -Source $Global:AppEventSource -ErrorAction Stop
-            # Optional: Write an initial informational record to confirm creation
             Write-EventLog -LogName $Global:AppEventLogName -Source $Global:AppEventSource -EventId 1000 -EntryType Information -Message 'Event source initialized.'
         }
     } catch {
-        # Non-fatal: fall back to CSV-only if this fails (e.g., not admin)
-        Write-Verbose "Ensure-AppEventSource: $_"
+        Write-Verbose "Ensure-AppEventSource failed or not elevated: $($_.Exception.Message)"
     }
 }
 
@@ -62,47 +65,8 @@ function Write-AppEvent {
         [int]$EventId = 1001
     )
 
-# v1.2.0 — Event Log integration ---------------------------------------------
-
-# Ensure you add this to your param() in each script:
-# [switch]$WriteEventLog
-
-# Constants for Application Event Log
-$Global:AppEventLogName  = 'Application'
-$Global:AppEventSource   = 'WindowsMgmtScripts'
-
-function Ensure-AppEventSource {
-    [CmdletBinding()]
-    param()
-    try {
-        if (-not [System.Diagnostics.EventLog]::SourceExists($Global:AppEventSource)) {
-            # Creating an event source requires admin. If the script isn't running elevated,
-            # catch and continue (CSV logging remains unaffected).
-            New-EventLog -LogName $Global:AppEventLogName -Source $Global:AppEventSource -ErrorAction Stop
-            # Optional: Write an initial informational record to confirm creation
-            Write-EventLog -LogName $Global:AppEventLogName -Source $Global:AppEventSource -EventId 1000 -EntryType Information -Message 'Event source initialized.'
-        }
-    } catch {
-        # Non-fatal: fall back to CSV-only if this fails (e.g., not admin)
-        Write-Verbose "Ensure-AppEventSource: $_"
-    }
-}
-
-function Write-AppEvent {
-    [CmdletBinding()]
-    param(
-        [Parameter(Mandatory)]
-        [ValidateSet('Information','Warning','Error')]
-        [string]$Level,
-
-        [Parameter(Mandatory)]
-        [string]$Message,
-
-        [int]$EventId = 1001
-    )
     if (-not $WriteEventLog) { return }
 
-    # Ensure source exists (no-op after first success)
     Ensure-AppEventSource
 
     try {
@@ -113,395 +77,219 @@ function Write-AppEvent {
         }
         Write-EventLog -LogName $Global:AppEventLogName -Source $Global:AppEventSource -EventId $EventId -EntryType $entryType -Message $Message
     } catch {
-        # Never break main flow due to eventing
-        Write-Verbose "Write-AppEvent failed: $_"
+        Write-Verbose "Write-AppEvent failed: $($_.Exception.Message)"
     }
 }
-# ---------------------------------------------------------------------------
-    
-    if (-not $WriteEventLog) { return }
 
-    # Ensure source exists (no-op after first success)
-    Ensure-AppEventSource
+# =========================
+# CSV logging helper
+# =========================
 
-    try {
-        $entryType = switch ($Level) {
-            'Information' { 'Information' }
-            'Warning'     { 'Warning' }
-            'Error'       { 'Error' }
-        }
-        Write-EventLog -LogName $Global:AppEventLogName -Source $Global:AppEventSource -EventId $EventId -EntryType $entryType -Message $Message
-    } catch {
-        # Never break main flow due to eventing
-        Write-Verbose "Write-AppEvent failed: $_"
-    }
-}
-# ---------------------------------------------------------------------------
+$script:ScriptName = 'Remove-UserProfileInteractive'
+$script:LogDir     = Join-Path -Path $LogRoot -ChildPath $script:ScriptName
+$script:LogFile    = Join-Path -Path $script:LogDir -ChildPath ("{0}_{1}.csv" -f $script:ScriptName, (Get-Date -Format 'yyyyMMdd'))
 
-# --- Logging helpers ---
 function Initialize-Log {
-    param([Parameter(Mandatory)][string]$LogFile)
-    if (-not (Test-IsAdmin)) { return }
-    if (-not (Test-Path -LiteralPath $LogRoot)) { New-Item -ItemType Directory -Path $LogRoot -Force | Out-Null }
-    if (Test-Path -LiteralPath $LogFile) {
-        $max = 5MB
-        $len = (Get-Item -LiteralPath $LogFile).Length
-        if ($len -gt $max) {
-            $stamp = (Get-Date).ToString('yyyyMMddHHmmss')
-            Rename-Item -LiteralPath $LogFile -NewName ("{0}.{1}.bak" -f (Split-Path $LogFile -Leaf), $stamp) -Force
-        }
-    }
-    if (-not (Test-Path -LiteralPath $LogFile)) {
-        "Timestamp,Computer,RunAs,Script,Action,TargetUser,TargetSID,ProfilePath,SizeMB,Loaded,Result,Message" |
-            Out-File -FilePath $LogFile -Encoding utf8
-    }
-}
-
-
-# v1.2.0 — Event Log integration ---------------------------------------------
-
-# Ensure you add this to your param() in each script:
-# [switch]$WriteEventLog
-
-# Constants for Application Event Log
-$Global:AppEventLogName  = 'Application'
-$Global:AppEventSource   = 'WindowsMgmtScripts'
-
-function Ensure-AppEventSource {
     [CmdletBinding()]
     param()
     try {
-        if (-not [System.Diagnostics.EventLog]::SourceExists($Global:AppEventSource)) {
-            # Creating an event source requires admin. If the script isn't running elevated,
-            # catch and continue (CSV logging remains unaffected).
-            New-EventLog -LogName $Global:AppEventLogName -Source $Global:AppEventSource -ErrorAction Stop
-            # Optional: Write an initial informational record to confirm creation
-            Write-EventLog -LogName $Global:AppEventLogName -Source $Global:AppEventSource -EventId 1000 -EntryType Information -Message 'Event source initialized.'
-        }
+        if (-not (Test-Path -LiteralPath $LogRoot)) { New-Item -ItemType Directory -Path $LogRoot -Force | Out-Null }
+        if (-not (Test-Path -LiteralPath $script:LogDir)) { New-Item -ItemType Directory -Path $script:LogDir -Force | Out-Null }
     } catch {
-        # Non-fatal: fall back to CSV-only if this fails (e.g., not admin)
-        Write-Verbose "Ensure-AppEventSource: $_"
+        Write-Verbose "Initialize-Log failed: $($_.Exception.Message)"
     }
 }
-
-function Write-AppEvent {
-    [CmdletBinding()]
-    param(
-        [Parameter(Mandatory)]
-        [ValidateSet('Information','Warning','Error')]
-        [string]$Level,
-
-        [Parameter(Mandatory)]
-        [string]$Message,
-
-        [int]$EventId = 1001
-    )
-    if (-not $WriteEventLog) { return }
-
-    # Ensure source exists (no-op after first success)
-    Ensure-AppEventSource
-
-    try {
-        $entryType = switch ($Level) {
-            'Information' { 'Information' }
-            'Warning'     { 'Warning' }
-            'Error'       { 'Error' }
-        }
-        Write-EventLog -LogName $Global:AppEventLogName -Source $Global:AppEventSource -EventId $EventId -EntryType $entryType -Message $Message
-    } catch {
-        # Never break main flow due to eventing
-        Write-Verbose "Write-AppEvent failed: $_"
-    }
-}
-# ---------------------------------------------------------------------------
 
 function Write-Log {
-    param(
-        [string]$Action,
-        [string]$TargetUser,
-        [string]$TargetSID,
-        [string]$ProfilePath,
-        [double]$SizeMB,
-        [bool]$Loaded,
-        [string]$Result,
-        [string]$Message
-    )
-
-# v1.2.0 — Event Log integration ---------------------------------------------
-
-# Ensure you add this to your param() in each script:
-# [switch]$WriteEventLog
-
-# Constants for Application Event Log
-$Global:AppEventLogName  = 'Application'
-$Global:AppEventSource   = 'WindowsMgmtScripts'
-
-function Ensure-AppEventSource {
-    [CmdletBinding()]
-    param()
-    try {
-        if (-not [System.Diagnostics.EventLog]::SourceExists($Global:AppEventSource)) {
-            # Creating an event source requires admin. If the script isn't running elevated,
-            # catch and continue (CSV logging remains unaffected).
-            New-EventLog -LogName $Global:AppEventLogName -Source $Global:AppEventSource -ErrorAction Stop
-            # Optional: Write an initial informational record to confirm creation
-            Write-EventLog -LogName $Global:AppEventLogName -Source $Global:AppEventSource -EventId 1000 -EntryType Information -Message 'Event source initialized.'
-        }
-    } catch {
-        # Non-fatal: fall back to CSV-only if this fails (e.g., not admin)
-        Write-Verbose "Ensure-AppEventSource: $_"
-    }
-}
-
-function Write-AppEvent {
     [CmdletBinding()]
     param(
-        [Parameter(Mandatory)]
-        [ValidateSet('Information','Warning','Error')]
-        [string]$Level,
-
-        [Parameter(Mandatory)]
-        [string]$Message,
-
-        [int]$EventId = 1001
+        [Parameter(Mandatory)][ValidateSet('Info','Warning','Error')] [string]$Level,
+        [Parameter(Mandatory)][string]$Message,
+        [string]$Action = '',
+        [string]$User   = '',
+        [string]$SID    = '',
+        [string]$Path   = ''
     )
-    if (-not $WriteEventLog) { return }
 
-    # Ensure source exists (no-op after first success)
-    Ensure-AppEventSource
-
-    try {
-        $entryType = switch ($Level) {
-            'Information' { 'Information' }
-            'Warning'     { 'Warning' }
-            'Error'       { 'Error' }
-        }
-        Write-EventLog -LogName $Global:AppEventLogName -Source $Global:AppEventSource -EventId $EventId -EntryType $entryType -Message $Message
-    } catch {
-        # Never break main flow due to eventing
-        Write-Verbose "Write-AppEvent failed: $_"
+    $row = [PSCustomObject]@{
+        Time    = (Get-Date).ToString('s')
+        Level   = $Level
+        Action  = $Action
+        User    = $User
+        SID     = $SID
+        Path    = $Path
+        Message = $Message
     }
-}
-# ---------------------------------------------------------------------------
-    
+
     try {
-        $row = [PSCustomObject]@{
-            Timestamp   = (Get-Date).ToString("s")
-            Computer    = $env:COMPUTERNAME
-            RunAs       = (whoami)
-            Script      = $MyInvocation.MyCommand.Name
-            Action      = $Action
-            TargetUser  = $TargetUser
-            TargetSID   = $TargetSID
-            ProfilePath = $ProfilePath
-            SizeMB      = $SizeMB
-            Loaded      = $Loaded
-            Result      = $Result
-            Message     = $Message
-        }
         $row | Export-Csv -Path $script:LogFile -NoTypeInformation -Append -Encoding UTF8
-    } catch { Write-Verbose "Write-Log failed: $($_.Exception.Message)" }
+    } catch {
+        Write-Verbose "Write-Log failed: $($_.Exception.Message)"
+    }
 }
 
-# --- Helper: admin check ---
-function Test-IsAdmin {
-    $currentIdentity = [Security.Principal.WindowsIdentity]::GetCurrent()
-    $principal = New-Object Security.Principal.WindowsPrincipal($currentIdentity)
-    return $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+# =========================
+# Utility helpers
+# =========================
+
+function Test-IsElevated {
+    try {
+        $currentIdentity  = [Security.Principal.WindowsIdentity]::GetCurrent()
+        $principal        = New-Object Security.Principal.WindowsPrincipal($currentIdentity)
+        return $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+    } catch {
+        return $false
+    }
 }
 
-# --- Init log file path ---
-$script:LogFile = Join-Path $LogRoot 'Remove-UserProfileInteractive.log.csv'
-Initialize-Log -LogFile $script:LogFile
+function Resolve-UserFromSid {
+    param([string]$SidString)
+    try {
+        $sid  = New-Object System.Security.Principal.SecurityIdentifier($SidString)
+        $acct = $sid.Translate([System.Security.Principal.NTAccount]).Value  # e.g., WORKSTATION\jdoe
+        if ($acct -like '*\*') { return ($acct.Split('\')[-1]) } else { return $acct }
+    } catch {
+        return ''
+    }
+}
 
-# --- Require elevation ---
-if (-not (Test-IsAdmin)) {
-    Write-Warning "Please run this script in an elevated PowerShell session (Run as Administrator)."
-    Write-Log -Action 'ElevationCheck' -Result 'Blocked' -Message 'Script not elevated'
+# =========================
+# Main
+# =========================
+
+Initialize-Log
+
+# Event IDs for consistency
+$EVT_START   = 2004
+$EVT_SUCCESS = 2000
+$EVT_BLOCKED = 2001
+$EVT_ERROR   = 2002
+$EVT_FINISH  = 2003
+
+$actionName = 'DeleteProfile'
+
+Write-Log -Level Info -Action "$actionName: Start" -Message "$actionName: Start"
+Write-AppEvent -Level Information -EventId $EVT_START -Message "WindowsMgmtScripts: $actionName: Start"
+
+if (-not (Test-IsElevated)) {
+    $msg = "$actionName: Error | Message=""Script not running elevated. Please run PowerShell as Administrator."""
+    Write-Log -Level Error -Action "$actionName: Error" -Message $msg
+    Write-AppEvent -Level Error -EventId $EVT_ERROR -Message "WindowsMgmtScripts: $msg"
+    Write-Warning "This script must be run in an elevated PowerShell session."
     return
 }
 
-# --- Enumerate profiles ---
 try {
-    $profiles = Get-CimInstance -ClassName Win32_UserProfile -ErrorAction Stop |
+    # Enumerate local (non-special) user profiles under C:\Users
+    $profilesRaw = Get-CimInstance -ClassName Win32_UserProfile -ErrorAction Stop |
         Where-Object {
-            $_.LocalPath -and
-            $_.LocalPath -notlike '*systemprofile*' -and
-            $_.LocalPath -notlike '*LocalService*'  -and
-            $_.LocalPath -notlike '*NetworkService*' -and
-            $_.Special -eq $false
+            $_.LocalPath -and ($_.LocalPath -like 'C:\Users\*') -and ($_.Special -eq $false)
         }
-    Write-Log -Action 'EnumerateProfiles' -Result 'Success' -Message ("Count={0}" -f ($profiles | Measure-Object).Count)
-}
-catch {
-    Write-Error "Failed to enumerate profiles: $($_.Exception.Message)"
-    Write-Log -Action 'EnumerateProfiles' -Result 'Error' -Message $_.Exception.Message
-    return
-}
 
-if (-not $profiles -or $profiles.Count -eq 0) {
-    Write-Host "No eligible user profiles found."
-    Write-Log -Action 'EnumerateProfiles' -Result 'Empty' -Message 'No profiles matched filters'
-    return
-}
+    if (-not $profilesRaw -or $profilesRaw.Count -eq 0) {
+        $msg = "$actionName: Blocked | Reason=No eligible profiles found"
+        Write-Log -Level Warning -Action "$actionName: Blocked" -Message $msg
+        Write-AppEvent -Level Warning -EventId $EVT_BLOCKED -Message "WindowsMgmtScripts: $msg"
+        Write-Host "No eligible profiles were found under C:\Users."
+        return
+    }
 
-$currentSid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value
-
-function Get-FolderSizeMB {
-    param([string]$Path)
-    try {
-        if (-not (Test-Path -LiteralPath $Path)) { return 0 }
-        $bytes = (Get-ChildItem -LiteralPath $Path -Recurse -Force -ErrorAction SilentlyContinue |
-                  Measure-Object -Property Length -Sum -ErrorAction SilentlyContinue).Sum
-        if (-not $bytes) { $bytes = 0 }
-        return [math]::Round($bytes / 1MB, 1)
-    } catch { return 0 }
-}
-
-# v1.2.0 — Event Log integration ---------------------------------------------
-
-# Ensure you add this to your param() in each script:
-# [switch]$WriteEventLog
-
-# Constants for Application Event Log
-$Global:AppEventLogName  = 'Application'
-$Global:AppEventSource   = 'WindowsMgmtScripts'
-
-function Ensure-AppEventSource {
-    [CmdletBinding()]
-    param()
-    try {
-        if (-not [System.Diagnostics.EventLog]::SourceExists($Global:AppEventSource)) {
-            # Creating an event source requires admin. If the script isn't running elevated,
-            # catch and continue (CSV logging remains unaffected).
-            New-EventLog -LogName $Global:AppEventLogName -Source $Global:AppEventSource -ErrorAction Stop
-            # Optional: Write an initial informational record to confirm creation
-            Write-EventLog -LogName $Global:AppEventLogName -Source $Global:AppEventSource -EventId 1000 -EntryType Information -Message 'Event source initialized.'
+    # Project view model for selection
+    $profiles = $profilesRaw | ForEach-Object {
+        [PSCustomObject]@{
+            User   = (Resolve-UserFromSid -SidString $_.SID)
+            SID    = $_.SID
+            Path   = $_.LocalPath
+            Loaded = [bool]$_.Loaded
+            LastUseTime = if ($_.LastUseTime) { [Management.ManagementDateTimeConverter]::ToDateTime($_.LastUseTime) } else { $null }
         }
+    }
+
+    # Display options
+    Write-Host ""
+    Write-Host "== Select a profile to DELETE =="
+    for ($i = 0; $i -lt $profiles.Count; $i++) {
+        $p = $profiles[$i]
+        $loadedMark = if ($p.Loaded) { ' (LOADED)' } else { '' }
+        $lut = if ($p.LastUseTime) { $p.LastUseTime.ToString('yyyy-MM-dd HH:mm') } else { 'N/A' }
+        Write-Host ("[{0}] User={1}, SID={2}, Path={3}{4}, LastUse={5}" -f ($i+1), $p.User, $p.SID, $p.Path, $loadedMark, $lut)
+    }
+    Write-Host ""
+
+    # Selection prompt
+    $sel = Read-Host "Enter the number of the profile to delete (or press Enter to cancel)"
+    if ([string]::IsNullOrWhiteSpace($sel)) {
+        $msg = "$actionName: Cancelled by user"
+        Write-Log -Level Info -Action "$actionName: Cancelled" -Message $msg
+        Write-AppEvent -Level Information -EventId $EVT_FINISH -Message "WindowsMgmtScripts: $msg"
+        return
+    }
+
+    if (-not ($sel -as [int]) -or $sel -lt 1 -or $sel -gt $profiles.Count) {
+        $msg = "$actionName: Blocked | Reason=Invalid selection"
+        Write-Log -Level Warning -Action "$actionName: Blocked" -Message $msg
+        Write-AppEvent -Level Warning -EventId $EVT_BLOCKED -Message "WindowsMgmtScripts: $msg"
+        Write-Warning "Invalid selection."
+        return
+    }
+
+    $target = $profiles[$sel - 1]
+    $username = $target.User
+    $sid      = $target.SID
+    $path     = $target.Path
+
+    # Block if loaded
+    if ($target.Loaded) {
+        $msg = "$actionName: Blocked | Reason=Profile LOADED, User=$username, SID=$sid, Path=$path"
+        Write-Log -Level Warning -Action "$actionName: Blocked" -User $username -SID $sid -Path $path -Message $msg
+        Write-AppEvent -Level Warning -EventId $EVT_BLOCKED -Message "WindowsMgmtScripts: $msg"
+        Write-Warning "Profile is currently loaded. Please sign the user off and try again."
+        return
+    }
+
+    # Final confirmation
+    $confirm = Read-Host "Type YES to confirm deletion of profile for '$username' at '$path'"
+    if ($confirm -ne 'YES') {
+        $msg = "$actionName: Cancelled by user at confirmation"
+        Write-Log -Level Info -Action "$actionName: Cancelled" -User $username -SID $sid -Path $path -Message $msg
+        Write-AppEvent -Level Information -EventId $EVT_FINISH -Message "WindowsMgmtScripts: $msg"
+        Write-Host "Cancelled."
+        return
+    }
+
+    # Locate the original CIM instance for deletion
+    $targetCim = $profilesRaw | Where-Object { $_.SID -eq $sid }
+    if (-not $targetCim) {
+        $msg = "$actionName: Error | Message=""Target profile instance not found for SID $sid"""
+        Write-Log -Level Error -Action "$actionName: Error" -User $username -SID $sid -Path $path -Message $msg
+        Write-AppEvent -Level Error -EventId $EVT_ERROR -Message "WindowsMgmtScripts: $msg"
+        throw $msg
+    }
+
+    try {
+        # Use the WMI Delete method for Win32_UserProfile
+        $result = Invoke-CimMethod -InputObject $targetCim -MethodName Delete -ErrorAction Stop
+
+        if ($null -ne $result -and $result.ReturnValue -ne 0) {
+            $code = $result.ReturnValue
+            $emsg = "$actionName: Error | Message=""Win32_UserProfile.Delete returned code $code"", User=$username, SID=$sid, Path=$path"
+            Write-Log -Level Error -Action "$actionName: Error" -User $username -SID $sid -Path $path -Message $emsg
+            Write-AppEvent -Level Error -EventId $EVT_ERROR -Message "WindowsMgmtScripts: $emsg"
+            throw $emsg
+        }
+
+        $smsg = "$actionName: Success | User=$username, SID=$sid, Path=$path"
+        Write-Log -Level Info -Action "$actionName: Success" -User $username -SID $sid -Path $path -Message $smsg
+        Write-AppEvent -Level Information -EventId $EVT_SUCCESS -Message "WindowsMgmtScripts: $smsg"
+        Write-Host "Success: Profile for '$username' has been deleted."
     } catch {
-        # Non-fatal: fall back to CSV-only if this fails (e.g., not admin)
-        Write-Verbose "Ensure-AppEventSource: $_"
+        $emsg = "$actionName: Error | Message=""$($_.Exception.Message)"", User=$username, SID=$sid, Path=$path"
+        Write-Log -Level Error -Action "$actionName: Error" -User $username -SID $sid -Path $path -Message $emsg
+        Write-AppEvent -Level Error -EventId $EVT_ERROR -Message "WindowsMgmtScripts: $emsg"
+        throw
     }
 }
-
-function Write-AppEvent {
-    [CmdletBinding()]
-    param(
-        [Parameter(Mandatory)]
-        [ValidateSet('Information','Warning','Error')]
-        [string]$Level,
-
-        [Parameter(Mandatory)]
-        [string]$Message,
-
-        [int]$EventId = 1001
-    )
-    if (-not $WriteEventLog) { return }
-
-    # Ensure source exists (no-op after first success)
-    Ensure-AppEventSource
-
-    try {
-        $entryType = switch ($Level) {
-            'Information' { 'Information' }
-            'Warning'     { 'Warning' }
-            'Error'       { 'Error' }
-        }
-        Write-EventLog -LogName $Global:AppEventLogName -Source $Global:AppEventSource -EventId $EventId -EntryType $entryType -Message $Message
-    } catch {
-        # Never break main flow due to eventing
-        Write-Verbose "Write-AppEvent failed: $_"
-    }
-}
-# ---------------------------------------------------------------------------
-
-
-$display = @()
-foreach ($p in $profiles) {
-    $username = Split-Path $p.LocalPath -Leaf
-    $lastUse  = $p.LastUseTime
-    $sizeMB   = Get-FolderSizeMB -Path $p.LocalPath
-    $display += [PSCustomObject]@{
-        Username   = $username
-        SID        = $p.SID
-        Path       = $p.LocalPath
-        LastUse    = if ($lastUse) { (Get-Date $lastUse) } else { $null }
-        SizeMB     = $sizeMB
-        Loaded     = [bool]$p.Loaded
-        IsCurrent  = ($p.SID -eq $currentSid)
-        CimObject  = $p
-    }
-}
-
-if ($display.Count -eq 0) {
-    Write-Host "No eligible user profiles found."
-    Write-Log -Action 'PrepareDisplay' -Result 'Empty' -Message 'No display rows created'
-    return
-}
-
-$display = $display | Sort-Object LastUse
-
-Write-Host "Select a profile to delete:`n" -ForegroundColor Cyan
-for ($i = 0; $i -lt $display.Count; $i++) {
-    $row = $display[$i]
-    $last = if ($row.LastUse) { $row.LastUse.ToString("yyyy-MM-dd HH:mm") } else { "N/A" }
-    $loadedTag = if ($row.Loaded) { " [LOADED]" } else { "" }
-    $currentTag = if ($row.IsCurrent) { " [CURRENT USER]" } else { "" }
-    Write-Host ("{0,2}) {1}{2}{3}  | Last Use: {4} | Size: {5} MB" -f ($i+1), $row.Username, $loadedTag, $currentTag, $last, $row.SizeMB)
-}
-
-Write-Host
-$choice = Read-Host "Enter the number of the profile to delete (or press Enter to cancel)"
-if ([string]::IsNullOrWhiteSpace($choice)) {
-    Write-Host "Operation cancelled."
-    Write-Log -Action 'SelectProfile' -Result 'Cancelled' -Message 'User pressed Enter'
-    return
-}
-if (-not ($choice -as [int])) {
-    Write-Host "Invalid selection (not a number)."
-    Write-Log -Action 'SelectProfile' -Result 'Invalid' -Message "Input=$choice"
-    return
-}
-$choice = [int]$choice
-if ($choice -lt 1 -or $choice -gt $display.Count) {
-    Write-Host "Invalid selection (out of range)."
-    Write-Log -Action 'SelectProfile' -Result 'Invalid' -Message "OutOfRange=$choice"
-    return
-}
-
-$selected = $display[$choice - 1]
-
-Write-Host "`nYou selected: $($selected.Username)"
-Write-Host "SID:   $($selected.SID)"
-Write-Host "Path:  $($selected.Path)"
-Write-Host "Last:  $($selected.LastUse)"
-Write-Host "Size:  $($selected.SizeMB) MB"
-if ($selected.Loaded) { Write-Warning "This profile is currently LOADED (in use)." }
-if ($selected.IsCurrent) { Write-Warning "This is the CURRENTLY LOGGED-ON user." }
-
-Write-Log -Action 'SelectProfile' -TargetUser $selected.Username -TargetSID $selected.SID -ProfilePath $selected.Path -SizeMB $selected.SizeMB -Loaded $selected.Loaded -Result 'Selected' -Message 'User chose a profile'
-
-if ($selected.Loaded) {
-    $msg = "Deletion blocked: profile is LOADED"
-    Write-Warning $msg
-    Write-Log -Action 'DeleteProfile' -TargetUser $selected.Username -TargetSID $selected.SID -ProfilePath $selected.Path -SizeMB $selected.SizeMB -Loaded $selected.Loaded -Result 'Blocked' -Message $msg
-    return
-}
-
-$confirm = Read-Host "`nAre you sure you want to delete this profile (folder + registry)? (Y/N)"
-if ($confirm -notmatch '^(Y|y)$') {
-    Write-Host "Operation cancelled."
-    Write-Log -Action 'DeleteProfile' -TargetUser $selected.Username -TargetSID $selected.SID -ProfilePath $selected.Path -SizeMB $selected.SizeMB -Loaded $selected.Loaded -Result 'Cancelled' -Message 'User declined'
-    return
-}
-
-try {
-    Remove-CimInstance -InputObject $selected.CimObject -ErrorAction Stop
-    Write-Host "`nProfile for '$($selected.Username)' deleted successfully." -ForegroundColor Green
-    Write-Log -Action 'DeleteProfile' -TargetUser $selected.Username -TargetSID $selected.SID -ProfilePath $selected.Path -SizeMB $selected.SizeMB -Loaded $selected.Loaded -Result 'Success' -Message 'CIM delete ok'
-}
-catch {
-    $err = "Failed to delete profile: $($_.Exception.Message)"
-    Write-Error $err
-    Write-Log -Action 'DeleteProfile' -TargetUser $selected.Username -TargetSID $selected.SID -ProfilePath $selected.Path -SizeMB $selected.SizeMB -Loaded $selected.Loaded -Result 'Error' -Message $err
+finally {
+    Write-Log -Level Info -Action "$actionName: Finish" -Message "$actionName: Finish"
+    Write-AppEvent -Level Information -EventId $EVT_FINISH -Message "WindowsMgmtScripts: $actionName: Finish"
 }
