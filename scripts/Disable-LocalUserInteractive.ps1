@@ -1,3 +1,4 @@
+
 <#
 .SYNOPSIS
     Interactively disable a local user account.
@@ -88,4 +89,3 @@ try {
 }
 catch {
     Write-Error "Failed to disable user: $($_.Exception.Message)"
-}
