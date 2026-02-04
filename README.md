@@ -50,3 +50,35 @@ Get-WinEvent -FilterHashtable @{
 Run PowerShell as Administrator
 Windows 10/11 or Server 2016+
 PowerShell 5.1+
+
+
+---
+
+## Disable-LocalUserInteractive — How to Use
+
+This tool allows you to safely **disable a local user account** on Windows.
+
+- Shows all non-system accounts
+- Blocks built-in protected accounts
+- Confirms before disabling
+- Short, clean, safe for technicians
+
+---
+
+### Run from GitHub (Recommended)
+
+```powershell
+[Net.ServicePointManager]::SecurityProtocol=[Net.SecurityProtocolType]::Tls12
+$u="https://raw.githubusercontent.com/Abassam08/windows-management-scripts/main/scripts/Disable-LocalUserInteractive.ps1"
+$d="$env:TEMP\Disable-LocalUserInteractive.ps1"
+Invoke-WebRequest -UseBasicParsing -Uri $u -OutFile $d
+powershell.exe -ExecutionPolicy Bypass -File $d
+```
+
+---
+
+Requirements
+
+Run as Administrator
+Windows 10/11 or Server 2016+
+PowerShell 5.1+
