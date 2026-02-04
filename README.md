@@ -20,6 +20,7 @@ Invoke-WebRequest -UseBasicParsing -Uri $u -OutFile $d
 powershell -ExecutionPolicy Bypass -File $d
 ```
 
+---
 
 ### 📁 Log Locations
 
