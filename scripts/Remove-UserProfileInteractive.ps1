@@ -3,23 +3,74 @@
     Remove-UserProfileInteractive.ps1
 
 .SYNOPSIS
-    Interactively delete local user profiles (folder + registry).
+    Interactively delete local user profiles (folder + registry), with logging.
 
 .DESCRIPTION
     Enumerates non-system, non-special profiles (including LOADED ones so you can see them).
     Displays a numbered list with username, last use time, and size.
     Blocks deletion if the selected profile is currently LOADED (in use).
+    Logs all significant actions and outcomes to CSV.
 
 .NOTES
     Author: Ahmed (Abassam08)
-    Version: 1.0.0
+    Version: 1.1.0
     Requires: PowerShell 5.1+, Windows 10/11 or Server 2016+
     Run as: Administrator
     License: MIT
-
 #>
 
-param()
+param(
+    [string]$LogRoot = "C:\ProgramData\WindowsMgmtScripts\Logs"
+)
+
+# --- Logging helpers ---
+function Initialize-Log {
+    param([Parameter(Mandatory)][string]$LogFile)
+    if (-not (Test-IsAdmin)) { return }
+    if (-not (Test-Path -LiteralPath $LogRoot)) { New-Item -ItemType Directory -Path $LogRoot -Force | Out-Null }
+    if (Test-Path -LiteralPath $LogFile) {
+        $max = 5MB
+        $len = (Get-Item -LiteralPath $LogFile).Length
+        if ($len -gt $max) {
+            $stamp = (Get-Date).ToString('yyyyMMddHHmmss')
+            Rename-Item -LiteralPath $LogFile -NewName ("{0}.{1}.bak" -f (Split-Path $LogFile -Leaf), $stamp) -Force
+        }
+    }
+    if (-not (Test-Path -LiteralPath $LogFile)) {
+        "Timestamp,Computer,RunAs,Script,Action,TargetUser,TargetSID,ProfilePath,SizeMB,Loaded,Result,Message" |
+            Out-File -FilePath $LogFile -Encoding utf8
+    }
+}
+
+function Write-Log {
+    param(
+        [string]$Action,
+        [string]$TargetUser,
+        [string]$TargetSID,
+        [string]$ProfilePath,
+        [double]$SizeMB,
+        [bool]$Loaded,
+        [string]$Result,
+        [string]$Message
+    )
+    try {
+        $row = [PSCustomObject]@{
+            Timestamp   = (Get-Date).ToString("s")
+            Computer    = $env:COMPUTERNAME
+            RunAs       = (whoami)
+            Script      = $MyInvocation.MyCommand.Name
+            Action      = $Action
+            TargetUser  = $TargetUser
+            TargetSID   = $TargetSID
+            ProfilePath = $ProfilePath
+            SizeMB      = $SizeMB
+            Loaded      = $Loaded
+            Result      = $Result
+            Message     = $Message
+        }
+        $row | Export-Csv -Path $script:LogFile -NoTypeInformation -Append -Encoding UTF8
+    } catch { Write-Verbose "Write-Log failed: $($_.Exception.Message)" }
+}
 
 # --- Helper: admin check ---
 function Test-IsAdmin {
@@ -28,12 +79,18 @@ function Test-IsAdmin {
     return $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
 }
 
+# --- Init log file path ---
+$script:LogFile = Join-Path $LogRoot 'Remove-UserProfileInteractive.log.csv'
+Initialize-Log -LogFile $script:LogFile
+
+# --- Require elevation ---
 if (-not (Test-IsAdmin)) {
     Write-Warning "Please run this script in an elevated PowerShell session (Run as Administrator)."
+    Write-Log -Action 'ElevationCheck' -Result 'Blocked' -Message 'Script not elevated'
     return
 }
 
-# --- Gather profiles via CIM (modern) ---
+# --- Enumerate profiles ---
 try {
     $profiles = Get-CimInstance -ClassName Win32_UserProfile -ErrorAction Stop |
         Where-Object {
@@ -41,24 +98,24 @@ try {
             $_.LocalPath -notlike '*systemprofile*' -and
             $_.LocalPath -notlike '*LocalService*'  -and
             $_.LocalPath -notlike '*NetworkService*' -and
-            $_.Special -eq $false       # show Default/Public/etc. only if not special
-            # NOTE: We intentionally DO NOT filter on Loaded here (we will display LOADED)
+            $_.Special -eq $false
         }
+    Write-Log -Action 'EnumerateProfiles' -Result 'Success' -Message ("Count={0}" -f ($profiles | Measure-Object).Count)
 }
 catch {
     Write-Error "Failed to enumerate profiles: $($_.Exception.Message)"
+    Write-Log -Action 'EnumerateProfiles' -Result 'Error' -Message $_.Exception.Message
     return
 }
 
 if (-not $profiles -or $profiles.Count -eq 0) {
     Write-Host "No eligible user profiles found."
+    Write-Log -Action 'EnumerateProfiles' -Result 'Empty' -Message 'No profiles matched filters'
     return
 }
 
-# --- Current user SID to help annotate (not strictly required to block) ---
 $currentSid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value
 
-# --- Helper: safely compute folder size (approx), ignoring errors ---
 function Get-FolderSizeMB {
     param([string]$Path)
     try {
@@ -70,7 +127,6 @@ function Get-FolderSizeMB {
     } catch { return 0 }
 }
 
-# Build a display list with metadata
 $display = @()
 foreach ($p in $profiles) {
     $username = Split-Path $p.LocalPath -Leaf
@@ -90,10 +146,10 @@ foreach ($p in $profiles) {
 
 if ($display.Count -eq 0) {
     Write-Host "No eligible user profiles found."
+    Write-Log -Action 'PrepareDisplay' -Result 'Empty' -Message 'No display rows created'
     return
 }
 
-# Sort by LastUse (oldest first) to help cleanup decisions
 $display = $display | Sort-Object LastUse
 
 Write-Host "Select a profile to delete:`n" -ForegroundColor Cyan
@@ -109,17 +165,18 @@ Write-Host
 $choice = Read-Host "Enter the number of the profile to delete (or press Enter to cancel)"
 if ([string]::IsNullOrWhiteSpace($choice)) {
     Write-Host "Operation cancelled."
+    Write-Log -Action 'SelectProfile' -Result 'Cancelled' -Message 'User pressed Enter'
     return
 }
-
 if (-not ($choice -as [int])) {
     Write-Host "Invalid selection (not a number)."
+    Write-Log -Action 'SelectProfile' -Result 'Invalid' -Message "Input=$choice"
     return
 }
-
 $choice = [int]$choice
 if ($choice -lt 1 -or $choice -gt $display.Count) {
     Write-Host "Invalid selection (out of range)."
+    Write-Log -Action 'SelectProfile' -Result 'Invalid' -Message "OutOfRange=$choice"
     return
 }
 
@@ -133,24 +190,29 @@ Write-Host "Size:  $($selected.SizeMB) MB"
 if ($selected.Loaded) { Write-Warning "This profile is currently LOADED (in use)." }
 if ($selected.IsCurrent) { Write-Warning "This is the CURRENTLY LOGGED-ON user." }
 
-# Block deletion if profile is loaded
+Write-Log -Action 'SelectProfile' -TargetUser $selected.Username -TargetSID $selected.SID -ProfilePath $selected.Path -SizeMB $selected.SizeMB -Loaded $selected.Loaded -Result 'Selected' -Message 'User chose a profile'
+
 if ($selected.Loaded) {
-    Write-Warning "Deletion is blocked for LOADED profiles. Log off that user, or run the script from another admin account (or Safe Mode), then try again."
+    $msg = "Deletion blocked: profile is LOADED"
+    Write-Warning $msg
+    Write-Log -Action 'DeleteProfile' -TargetUser $selected.Username -TargetSID $selected.SID -ProfilePath $selected.Path -SizeMB $selected.SizeMB -Loaded $selected.Loaded -Result 'Blocked' -Message $msg
     return
 }
 
-# Confirm deletion (case-insensitive Y)
 $confirm = Read-Host "`nAre you sure you want to delete this profile (folder + registry)? (Y/N)"
 if ($confirm -notmatch '^(Y|y)$') {
     Write-Host "Operation cancelled."
+    Write-Log -Action 'DeleteProfile' -TargetUser $selected.Username -TargetSID $selected.SID -ProfilePath $selected.Path -SizeMB $selected.SizeMB -Loaded $selected.Loaded -Result 'Cancelled' -Message 'User declined'
     return
 }
 
-# --- Perform deletion via CIM ---
 try {
     Remove-CimInstance -InputObject $selected.CimObject -ErrorAction Stop
     Write-Host "`nProfile for '$($selected.Username)' deleted successfully." -ForegroundColor Green
+    Write-Log -Action 'DeleteProfile' -TargetUser $selected.Username -TargetSID $selected.SID -ProfilePath $selected.Path -SizeMB $selected.SizeMB -Loaded $selected.Loaded -Result 'Success' -Message 'CIM delete ok'
 }
 catch {
-    Write-Error "Failed to delete profile. Possible causes include: insufficient rights or file locks. Details: $($_.Exception.Message)"
+    $err = "Failed to delete profile: $($_.Exception.Message)"
+    Write-Error $err
+    Write-Log -Action 'DeleteProfile' -TargetUser $selected.Username -TargetSID $selected.SID -ProfilePath $selected.Path -SizeMB $selected.SizeMB -Loaded $selected.Loaded -Result 'Error' -Message $err
 }
