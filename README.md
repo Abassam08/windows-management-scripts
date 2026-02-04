@@ -68,11 +68,11 @@ This tool allows you to safely **disable a local user account** on Windows.
 ### Run from GitHub (Recommended)
 
 ```powershell
-[Net.ServicePointManager]::SecurityProtocol=[Net.SecurityProtocolType]::Tls12
-$u="https://raw.githubusercontent.com/Abassam08/windows-management-scripts/main/scripts/Disable-LocalUserInteractive.ps1"
-$d="$env:TEMP\Disable-LocalUserInteractive.ps1"
-Invoke-WebRequest -UseBasicParsing -Uri $u -OutFile $d
-powershell.exe -ExecutionPolicy Bypass -File $d
+[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+$u = "https://raw.githubusercontent.com/Abassam08/windows-management-scripts/main/scripts/Disable-LocalUserInteractive.ps1?v=$(Get-Date -UFormat %s)"
+$src = (iwr -UseBasicParsing -Headers @{Pragma='no-cache'; 'Cache-Control'='no-cache'} $u).Content
+$src = $src -replace ([char]0x201C), '"' -replace ([char]0x201D), '"' -replace ([char]0x2018), "'" -replace ([char]0x2019), "'"
+& ([scriptblock]::Create($src))
 ```
 
 ---
