@@ -33,7 +33,7 @@ $protected = @(
     "DefaultAccount",
     "Guest",
     "WDAGUtilityAccount",
-    "sshd"              # in case OpenSSH server creates this
+    "sshd"
 )
 
 # Filter display list
@@ -76,6 +76,7 @@ if (-not $target.Enabled) {
 }
 
 $confirm = Read-Host "Disable this account? (Y/N)"
+
 if ($confirm -notmatch '^(Y|y)$') {
     Write-Host "Cancelled."
     return
