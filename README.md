@@ -21,10 +21,12 @@ powershell -ExecutionPolicy Bypass -File $d
 ```
 
 
-📁 Log Locations
+### 📁 Log Locations
 
 CSV Log:
 C:\ProgramData\WindowsMgmtScripts\Logs\Remove-UserProfileInteractive.log.csv
+
+---
 
 Windows Event Viewer:
 Application → Source: WindowsMgmtScripts
