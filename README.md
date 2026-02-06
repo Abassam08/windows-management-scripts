@@ -12,7 +12,8 @@ This script lets you safely delete local user profiles (folder + registry) with:
 ### 📌 Run from GitHub (Recommended)
 Runs the latest version directly from the repository.
 
-```iex (iwr "https://raw.githubusercontent.com/Abassam08/windows-management-scripts/main/scripts/Remove-UserProfileInteractive.ps1" -UseBasicParsing)
+```
+iex (iwr "https://raw.githubusercontent.com/Abassam08/windows-management-scripts/main/scripts/Remove-UserProfileInteractive.ps1" -UseBasicParsing)
 ```
 
 ---
