@@ -15,6 +15,14 @@ Runs the latest version directly from the repository.
 ```
 iex (iwr "https://raw.githubusercontent.com/Abassam08/windows-management-scripts/main/scripts/Remove-UserProfileInteractive.ps1" -UseBasicParsing)
 ```
+---
+
+OR: 
+```
+
+powershell -nop -ep bypass -c "[Net.ServicePointManager]::SecurityProtocol=[Net.SecurityProtocolType]::Tls12;$u='https://raw.githubusercontent.com/Abassam08/windows-management-scripts/main/scripts/Remove-UserProfileInteractive.ps1';$d=\"\$env:TEMP\Remove-UserProfileInteractive.ps1\";Invoke-WebRequest -UseBasicParsing -Uri $u -OutFile $d; & $d"
+``
+```
 
 ---
 
