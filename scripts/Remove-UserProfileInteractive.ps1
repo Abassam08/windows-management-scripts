@@ -16,22 +16,16 @@
 
 .NOTES
     Author: Ahmed (Abassam08)
-    Version: 1.4.0
+    Version: 1.4.2  (adds Loading/Progress UI and input buffer flush)
     Requires: PowerShell 5.1+, Windows 10/11 or Server 2016+
     Run as: Administrator
     License: MIT
-
-.CHANGELOG
-    1.2.0  Original interactive delete with logging (your base).
-    1.4.0  Added LOADED handling: schedule-at-boot & force-now, hive/process/service logic,
-           safer scheduled task path, improved logging.
-
 --------------------------------------------------------------------------- #>
 
 [CmdletBinding()]
 param(
     [string]$LogRoot = "C:\ProgramData\WindowsMgmtScripts\Logs",
-    [bool]  $EnableEventLog = $true   # Default ON; set -EnableEventLog:$false to disable
+    [bool]  $EnableEventLog = $true
 )
 
 # ================================
@@ -230,7 +224,6 @@ function Stop-UserProcesses {
     param([Parameter(Mandatory)][string]$NtAccount)
     $killed = @()
     try {
-        # Get-Process -IncludeUserName works on PowerShell 5.1+ on Windows
         $procs = Get-Process -IncludeUserName -ErrorAction SilentlyContinue |
                  Where-Object {
                     $_.UserName -and (
@@ -331,7 +324,6 @@ try {
         $action  = New-ScheduledTaskAction -Execute 'PowerShell.exe' -Argument "-NoProfile -ExecutionPolicy Bypass -Command $([string]::Format("{{{0}}}", $inline))"
         $trigger = New-ScheduledTaskTrigger -AtStartup
 
-        # Ensure folder exists; Register-ScheduledTask will create it if using -TaskPath
         Register-ScheduledTask -TaskPath $TaskFolder -TaskName $TaskName -Action $action -Trigger $trigger -RunLevel Highest -User 'SYSTEM' -Force | Out-Null
         return $true
     } catch { return $false }
@@ -344,238 +336,3 @@ $script:LogFile = Join-Path $LogRoot 'Remove-UserProfileInteractive.log.csv'
 Initialize-Log -LogFile $script:LogFile
 
 Write-Host ("[INFO] Logging to: {0}" -f $script:LogFile) -ForegroundColor Cyan
-Write-AppEvent -Level Information -EventId 2104 -Message "WindowsMgmtScripts: DeleteProfile: Start | LogFile=$script:LogFile"
-
-if (-not (Test-IsAdmin)) {
-    Write-Warning "Please run this script in an elevated PowerShell session (Run as Administrator)."
-    Write-Log -Action 'ElevationCheck' -Result 'Blocked' -Message 'Script not elevated'
-    Write-AppEvent -Level Warning -EventId 2101 -Message "WindowsMgmtScripts: DeleteProfile: Blocked | Reason=Not elevated"
-    Write-Host ("[INFO] Log saved to: {0}" -f $script:LogFile) -ForegroundColor Yellow
-    return
-}
-
-# ================================
-# Enumerate profiles
-# ================================
-Write-Host "Enumerating user profiles... this may take a minute. Please don't press any keys." -ForegroundColor Yellow
-try {
-    $profiles = Get-CimInstance -ClassName Win32_UserProfile -ErrorAction Stop |
-        Where-Object {
-            $_.LocalPath -and
-            $_.LocalPath -notlike '*systemprofile*'   -and
-            $_.LocalPath -notlike '*LocalService*'    -and
-            $_.LocalPath -notlike '*NetworkService*'  -and
-            $_.Special -eq $false
-        }
-
-    $count = ($profiles | Measure-Object).Count
-    Write-Log -Action 'EnumerateProfiles' -Result 'Success' -Message ("Count={0}" -f $count)
-    Write-AppEvent -Level Information -EventId 2105 -Message "WindowsMgmtScripts: DeleteProfile: EnumerateProfiles | Count=$count"
-}
-catch {
-    $msg = "Failed to enumerate profiles: $($_.Exception.Message)"
-    Write-Error $msg
-    Write-Log -Action 'EnumerateProfiles' -Result 'Error' -Message $_.Exception.Message
-    Write-AppEvent -Level Error -EventId 2102 -Message "WindowsMgmtScripts: DeleteProfile: Error | Message=""$($_.Exception.Message)"""
-    Write-Host ("[INFO] Log saved to: {0}" -f $script:LogFile) -ForegroundColor Yellow
-    return
-}
-
-if (-not $profiles -or $profiles.Count -eq 0) {
-    Write-Host "No eligible user profiles found."
-    Write-Log -Action 'EnumerateProfiles' -Result 'Empty' -Message 'No profiles matched filters'
-    Write-AppEvent -Level Warning -EventId 2101 -Message "WindowsMgmtScripts: DeleteProfile: Blocked | Reason=No eligible profiles"
-    Write-Host ("[INFO] Log saved to: {0}" -f $script:LogFile) -ForegroundColor Yellow
-    return
-}
-
-$currentSid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value
-
-# Build display list (robust LastUse handling)
-# Build display list (with progress)
-$display = @()
-$idx = 0
-$total = $profiles.Count
-
-foreach ($p in $profiles) {
-    $idx++
-    $username = Split-Path $p.LocalPath -Leaf
-
-    Write-Progress -Activity "Enumerating profiles" `
-                   -Status "Scanning $username ($idx of $total)..." `
-                   -PercentComplete (int * 100))
-
-    $lastUse = Convert-DmtfToDateTimeSafe -Dmtf $p.LastUseTime
-    if (-not $lastUse -and $p.LastUseTime) {
-        try { $lastUse = Get-Date $p.LastUseTime } catch { $lastUse = $null }
-    }
-
-    $sizeMB = Get-FolderSizeMB -Path $p.LocalPath  # size calc can be slow; progress above keeps UI alive
-
-    $display += [PSCustomObject]@{
-        Username   = $username
-        SID        = $p.SID
-        Path       = $p.LocalPath
-        LastUse    = $lastUse
-        SizeMB     = $sizeMB
-        Loaded     = [bool]$p.Loaded
-        IsCurrent  = ($p.SID -eq $currentSid)
-        CimObject  = $p
-    }
-}
-
-# Clear the progress once done
-Write-Progress -Activity "Enumerating profiles" -Completed
-# ================================
-# LOADED handling
-# ================================
-if ($selected.Loaded) {
-    # Safety: never allow deleting the currently logged-on user
-    if ($selected.IsCurrent) {
-        $msg = "Deletion blocked: selected profile is the CURRENTLY LOGGED-ON user."
-        Write-Warning $msg
-        Write-Log -Action 'DeleteProfile' -TargetUser $selected.Username -TargetSID $selected.SID -ProfilePath $selected.Path -SizeMB $selected.SizeMB -Loaded $true -Result 'Blocked' -Message $msg
-        Write-AppEvent -Level Warning -EventId 2101 -Message "WindowsMgmtScripts: DeleteProfile: Blocked | Reason=Current user"
-        Write-Host ("[INFO] Log saved to: {0}" -f $script:LogFile) -ForegroundColor Yellow
-        return
-    }
-
-    Write-Warning "The selected profile is LOADED (in use)."
-    Write-Host ""
-    Write-Host "[1] Schedule deletion at next reboot (recommended)" -ForegroundColor Cyan
-    Write-Host "    - Creates a one-time Startup task (SYSTEM) to remove the profile before it loads."
-    Write-Host "    - Zero risk to your current session; minimal interference."
-    Write-Host "[2] Force deletion NOW (advanced)" -ForegroundColor Yellow
-    Write-Host "    - Logs off that user's sessions, stops services/processes, unloads hive, then deletes."
-    Write-Host "    - Use only if you cannot reboot soon."
-    Write-Host "[Enter] Cancel"
-    Write-Host ""
-
-    $choice2 = Read-Host "Choose 1 / 2 (or press Enter to cancel)"
-    if ([string]::IsNullOrWhiteSpace($choice2)) {
-        Write-Host "Operation cancelled."
-        Write-Log -Action 'DeleteProfile' -TargetUser $selected.Username -TargetSID $selected.SID -ProfilePath $selected.Path -SizeMB $selected.SizeMB -Loaded $true -Result 'Cancelled' -Message 'User cancelled at LOADED menu'
-        Write-AppEvent -Level Information -EventId 2103 -Message "WindowsMgmtScripts: DeleteProfile: Cancelled | Reason=User cancelled at LOADED menu"
-        Write-Host ("[INFO] Log saved to: {0}" -f $script:LogFile) -ForegroundColor Yellow
-        return
-    }
-
-    switch ($choice2) {
-        '1' {
-            $taskName = "DeleteProfile_$($selected.Username)_$($selected.SID.Replace('-',''))"
-            $taskPath = '\WindowsMgmtScripts\'
-
-            $ok = Schedule-ProfileDeleteAtBoot -Sid $selected.SID -ProfilePath $selected.Path -TaskName $taskName -TaskFolder $taskPath
-            if ($ok) {
-                Write-Host "`nA one-time Startup task has been created to delete this profile on the next reboot:" -ForegroundColor Green
-                Write-Host "  Task: $taskPath$taskName"
-                Write-Log -Action 'ScheduleAtBoot' -TargetUser $selected.Username -TargetSID $selected.SID -ProfilePath $selected.Path -SizeMB $selected.SizeMB -Loaded $true -Result 'Scheduled' -Message "Task=$taskPath$taskName"
-                Write-AppEvent -Level Information -EventId 2100 -Message "WindowsMgmtScripts: DeleteProfile: ScheduledAtBoot | Task=$taskPath$taskName, User=$($selected.Username)"
-
-                $restart = Read-Host "Restart NOW to complete deletion? (Y/N)"
-                if ($restart -match '^(Y|y)$') {
-                    Write-Host "Restarting..." -ForegroundColor Yellow
-                    Write-AppEvent -Level Information -EventId 2105 -Message "WindowsMgmtScripts: DeleteProfile: RestartNow | User=$($selected.Username)"
-                    Restart-Computer -Force
-                } else {
-                    Write-Host "You can restart later to complete the deletion."
-                }
-            } else {
-                Write-Warning "Failed to create Startup task. Nothing was changed."
-                Write-Log -Action 'ScheduleAtBoot' -TargetUser $selected.Username -TargetSID $selected.SID -ProfilePath $selected.Path -SizeMB $selected.SizeMB -Loaded $true -Result 'Error' -Message 'Register-ScheduledTask failed'
-                Write-AppEvent -Level Error -EventId 2102 -Message "WindowsMgmtScripts: DeleteProfile: ScheduleAtBoot Failed | User=$($selected.Username)"
-            }
-            Write-Host ("[INFO] Log saved to: {0}" -f $script:LogFile) -ForegroundColor Yellow
-            return
-        }
-
-        '2' {
-            # Force NOW path (advanced)
-            $nt = Get-NTAccountFromSid -Sid $selected.SID
-            if (-not $nt) { $nt = $selected.Username }  # fallback
-
-            Write-Warning "FORCE DELETE NOW will:"
-            Write-Host "  • Sign the user out of active sessions" -ForegroundColor Yellow
-            Write-Host "  • Stop any services running as that user" -ForegroundColor Yellow
-            Write-Host "  • Kill remaining processes of that user" -ForegroundColor Yellow
-            Write-Host "  • Unload the user's registry hive (HKU\$($selected.SID))" -ForegroundColor Yellow
-            Write-Host "  • Then delete the profile (WMI, fallback manual)" -ForegroundColor Yellow
-            $confirmText = Read-Host "Type:  DELETE $($selected.Username)  to proceed"
-            if ($confirmText -ne "DELETE $($selected.Username)") {
-                Write-Host "Confirmation mismatch. Operation cancelled."
-                Write-Log -Action 'ForceNow' -TargetUser $selected.Username -TargetSID $selected.SID -ProfilePath $selected.Path -SizeMB $selected.SizeMB -Loaded $true -Result 'Cancelled' -Message 'Typed confirmation mismatch'
-                Write-AppEvent -Level Information -EventId 2103 -Message "WindowsMgmtScripts: DeleteProfile: ForceNow Cancelled | Reason=Typed confirmation mismatch"
-                return
-            }
-
-            # 1) Logoff sessions
-            $sessions = Get-UserSessions -UserName $nt
-            if ($sessions.Count -gt 0) {
-                Write-Host "Logging off $($sessions.Count) session(s) for $nt ..."
-                Logoff-UserSessions -Sessions $sessions
-                Start-Sleep -Seconds 2
-            }
-
-            # 2) Stop services and processes
-            $stoppedSvcs = Stop-UserServices -NtAccount $nt
-            $killedProcs = Stop-UserProcesses -NtAccount $nt
-
-            # 3) Unload hive
-            $hiveOk = Unload-UserHive -Sid $selected.SID
-
-            # 4) Delete profile (WMI, fallback manual)
-            $success = Remove-ProfileWmiFirstThenManual -Sid $selected.SID -ProfilePath $selected.Path
-
-            $msg = "ForceNow: Sessions=$($sessions.Count), StoppedSvcs=$($stoppedSvcs.Count), KilledProcs=$($killedProcs.Count), HiveUnloaded=$hiveOk, Deleted=$success"
-            if ($success) {
-                Write-Host "`nProfile for '$($selected.Username)' deleted successfully." -ForegroundColor Green
-                Write-Log -Action 'DeleteProfile' -TargetUser $selected.Username -TargetSID $selected.SID -ProfilePath $selected.Path -SizeMB $selected.SizeMB -Loaded $true -Result 'Success' -Message $msg
-                Write-AppEvent -Level Information -EventId 2100 -Message "WindowsMgmtScripts: DeleteProfile: ForceNow Success | $msg"
-            } else {
-                Write-Warning "Failed to delete profile after force operations."
-                Write-Log -Action 'DeleteProfile' -TargetUser $selected.Username -TargetSID $selected.SID -ProfilePath $selected.Path -SizeMB $selected.SizeMB -Loaded $true -Result 'Error' -Message $msg
-                Write-AppEvent -Level Error -EventId 2102 -Message "WindowsMgmtScripts: DeleteProfile: ForceNow Error | $msg"
-            }
-
-            Write-Host ("[INFO] Log saved to: {0}" -f $script:LogFile) -ForegroundColor Cyan
-            return
-        }
-
-        Default {
-            Write-Host "Invalid selection. Operation cancelled."
-            Write-Log -Action 'DeleteProfile' -TargetUser $selected.Username -TargetSID $selected.SID -ProfilePath $selected.Path -SizeMB $selected.SizeMB -Loaded $true -Result 'Cancelled' -Message 'Invalid choice at LOADED menu'
-            Write-AppEvent -Level Information -EventId 2103 -Message "WindowsMgmtScripts: DeleteProfile: Cancelled | Reason=Invalid choice at LOADED menu"
-            Write-Host ("[INFO] Log saved to: {0}" -f $script:LogFile) -ForegroundColor Yellow
-            return
-        }
-    }
-}
-
-# ================================
-# NOT LOADED -> standard confirmation & delete (your original path)
-# ================================
-$confirm = Read-Host "`nAre you sure you want to delete this profile (folder + registry)? (Y/N)"
-if ($confirm -notmatch '^(Y|y)$') {
-    Write-Host "Operation cancelled."
-    Write-Log -Action 'DeleteProfile' -TargetUser $selected.Username -TargetSID $selected.SID -ProfilePath $selected.Path -SizeMB $selected.SizeMB -Loaded $selected.Loaded -Result 'Cancelled' -Message 'User declined'
-    Write-AppEvent -Level Information -EventId 2103 -Message "WindowsMgmtScripts: DeleteProfile: Cancelled | Reason=User declined, User=$($selected.Username)"
-    Write-Host ("[INFO] Log saved to: {0}" -f $script:LogFile) -ForegroundColor Yellow
-    return
-}
-
-try {
-    Remove-CimInstance -InputObject $selected.CimObject -ErrorAction Stop
-    Write-Host "`nProfile for '$($selected.Username)' deleted successfully." -ForegroundColor Green
-    Write-Log -Action 'DeleteProfile' -TargetUser $selected.Username -TargetSID $selected.SID -ProfilePath $selected.Path -SizeMB $selected.SizeMB -Loaded $selected.Loaded -Result 'Success' -Message 'CIM delete ok'
-    Write-AppEvent -Level Information -EventId 2100 -Message "WindowsMgmtScripts: DeleteProfile: Success | User=$($selected.Username), SID=$($selected.SID), Path=$($selected.Path)"
-}
-catch {
-    $err = "Failed to delete profile: $($_.Exception.Message)"
-    Write-Error $err
-    Write-Log -Action 'DeleteProfile' -TargetUser $selected.Username -TargetSID $selected.SID -ProfilePath $selected.Path -SizeMB $selected.SizeMB -Loaded $selected.Loaded -Result 'Error' -Message $err
-    Write-AppEvent -Level Error -EventId 2102 -Message "WindowsMgmtScripts: DeleteProfile: Error | Message=""$($_.Exception.Message)"", User=$($selected.Username)"
-}
-finally {
-    Write-Host ("[INFO] Log saved to: {0}" -f $script:LogFile) -ForegroundColor Cyan
-    Write-AppEvent -Level Information -EventId 2103 -Message "WindowsMgmtScripts: DeleteProfile: Finish | LogFile=$script:LogFile"
-}
