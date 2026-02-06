@@ -357,6 +357,7 @@ if (-not (Test-IsAdmin)) {
 # ================================
 # Enumerate profiles
 # ================================
+Write-Host "Enumerating user profiles... this may take a minute. Please don't press any keys." -ForegroundColor Yellow
 try {
     $profiles = Get-CimInstance -ClassName Win32_UserProfile -ErrorAction Stop |
         Where-Object {
@@ -391,14 +392,25 @@ if (-not $profiles -or $profiles.Count -eq 0) {
 $currentSid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value
 
 # Build display list (robust LastUse handling)
+# Build display list (with progress)
 $display = @()
+$idx = 0
+$total = $profiles.Count
+
 foreach ($p in $profiles) {
+    $idx++
     $username = Split-Path $p.LocalPath -Leaf
+
+    Write-Progress -Activity "Enumerating profiles" `
+                   -Status "Scanning $username ($idx of $total)..." `
+                   -PercentComplete (int * 100))
+
     $lastUse = Convert-DmtfToDateTimeSafe -Dmtf $p.LastUseTime
     if (-not $lastUse -and $p.LastUseTime) {
         try { $lastUse = Get-Date $p.LastUseTime } catch { $lastUse = $null }
     }
-    $sizeMB = Get-FolderSizeMB -Path $p.LocalPath
+
+    $sizeMB = Get-FolderSizeMB -Path $p.LocalPath  # size calc can be slow; progress above keeps UI alive
 
     $display += [PSCustomObject]@{
         Username   = $username
@@ -412,63 +424,8 @@ foreach ($p in $profiles) {
     }
 }
 
-if ($display.Count -eq 0) {
-    Write-Host "No eligible user profiles found."
-    Write-Log -Action 'PrepareDisplay' -Result 'Empty' -Message 'No display rows created'
-    Write-AppEvent -Level Warning -EventId 2101 -Message "WindowsMgmtScripts: DeleteProfile: Blocked | Reason=No display rows"
-    Write-Host ("[INFO] Log saved to: {0}" -f $script:LogFile) -ForegroundColor Yellow
-    return
-}
-
-$display = $display | Sort-Object LastUse
-
-Write-Host "Select a profile to delete:`n" -ForegroundColor Cyan
-for ($i = 0; $i -lt $display.Count; $i++) {
-    $row = $display[$i]
-    $last = if ($row.LastUse) { $row.LastUse.ToString("yyyy-MM-dd HH:mm") } else { "N/A" }
-    $loadedTag  = if ($row.Loaded)   { " [LOADED]" } else { "" }
-    $currentTag = if ($row.IsCurrent){ " [CURRENT USER]" } else { "" }
-    Write-Host ("{0,2}) {1}{2}{3}  | Last Use: {4} | Size: {5} MB" -f ($i+1), $row.Username, $loadedTag, $currentTag, $last, $row.SizeMB)
-}
-
-Write-Host
-$choice = Read-Host "Enter the number of the profile to delete (or press Enter to cancel)"
-if ([string]::IsNullOrWhiteSpace($choice)) {
-    Write-Host "Operation cancelled."
-    Write-Log -Action 'SelectProfile' -Result 'Cancelled' -Message 'User pressed Enter'
-    Write-AppEvent -Level Information -EventId 2103 -Message "WindowsMgmtScripts: DeleteProfile: Cancelled | Reason=User pressed Enter"
-    Write-Host ("[INFO] Log saved to: {0}" -f $script:LogFile) -ForegroundColor Yellow
-    return
-}
-if (-not ($choice -as [int])) {
-    Write-Host "Invalid selection (not a number)."
-    Write-Log -Action 'SelectProfile' -Result 'Invalid' -Message "Input=$choice"
-    Write-AppEvent -Level Warning -EventId 2101 -Message "WindowsMgmtScripts: DeleteProfile: Blocked | Reason=Invalid selection (non-numeric)"
-    Write-Host ("[INFO] Log saved to: {0}" -f $script:LogFile) -ForegroundColor Yellow
-    return
-}
-$choice = [int]$choice
-if ($choice -lt 1 -or $choice -gt $display.Count) {
-    Write-Host "Invalid selection (out of range)."
-    Write-Log -Action 'SelectProfile' -Result 'Invalid' -Message "OutOfRange=$choice"
-    Write-AppEvent -Level Warning -EventId 2101 -Message "WindowsMgmtScripts: DeleteProfile: Blocked | Reason=Invalid selection (out of range)"
-    Write-Host ("[INFO] Log saved to: {0}" -f $script:LogFile) -ForegroundColor Yellow
-    return
-}
-
-$selected = $display[$choice - 1]
-
-Write-Host "`nYou selected: $($selected.Username)"
-Write-Host "SID:   $($selected.SID)"
-Write-Host "Path:  $($selected.Path)"
-Write-Host "Last:  $($selected.LastUse)"
-Write-Host "Size:  $($selected.SizeMB) MB"
-if ($selected.Loaded)   { Write-Warning "This profile is currently LOADED (in use)." }
-if ($selected.IsCurrent){ Write-Warning "This is the CURRENTLY LOGGED-ON user." }
-
-Write-Log -Action 'SelectProfile' -TargetUser $selected.Username -TargetSID $selected.SID -ProfilePath $selected.Path -SizeMB $selected.SizeMB -Loaded $selected.Loaded -Result 'Selected' -Message 'User chose a profile'
-Write-AppEvent -Level Information -EventId 2105 -Message "WindowsMgmtScripts: DeleteProfile: Selected | User=$($selected.Username), SID=$($selected.SID), Path=$($selected.Path), Loaded=$($selected.Loaded)"
-
+# Clear the progress once done
+Write-Progress -Activity "Enumerating profiles" -Completed
 # ================================
 # LOADED handling
 # ================================
